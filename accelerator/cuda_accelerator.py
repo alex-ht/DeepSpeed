@@ -42,9 +42,18 @@ class CUDA_Accelerator(DeepSpeedAccelerator):
     def is_synchronized_device(self):
         return False
 
+    def use_host_timers(self):
+        return self.is_synchronized_device()
+
+    def resolves_data_dependency(self):
+        return self.is_synchronized_device()
+
+    def handles_memory_backpressure(self):
+        return self.is_synchronized_device()
+
     # Device APIs
     def device_name(self, device_index=None):
-        if device_index == None:
+        if device_index is None:
             return 'cuda'
         return 'cuda:{}'.format(device_index)
 
@@ -180,17 +189,31 @@ class CUDA_Accelerator(DeepSpeedAccelerator):
 
     # Data types
     def is_bf16_supported(self):
+        if not torch.cuda.is_available():
+            return True
         return torch.cuda.is_bf16_supported()
 
     def is_fp16_supported(self):
+        if not torch.cuda.is_available():
+            return True
+        # See https://docs.nvidia.com/deeplearning/tensorrt/support-matrix/index.html#hardware-precision-matrix
+        # FP16 on compute capability 6.x is deprecated
+        allow_deprecated_fp16 = os.environ.get('DS_ALLOW_DEPRECATED_FP16', '0') == '1'
         major, _ = torch.cuda.get_device_capability()
         if major >= 7:
+            return True
+        elif major == 6 and allow_deprecated_fp16:
             return True
         else:
             return False
 
     def supported_dtypes(self):
-        return [torch.float, torch.half, torch.bfloat16]
+        supported_dtypes = [torch.float]
+        if self.is_fp16_supported():
+            supported_dtypes.append(torch.half)
+        if self.is_bf16_supported():
+            supported_dtypes.append(torch.bfloat16)
+        return supported_dtypes
 
     # Misc
     def amp(self):
@@ -221,6 +244,17 @@ class CUDA_Accelerator(DeepSpeedAccelerator):
             return True
         else:
             return False
+
+    # Graph operations
+    def create_graph(self):
+        return torch.cuda.CUDAGraph()
+
+    def capture_to_graph(self, graph, pool=None, stream=None):
+        return torch.cuda.graph(graph, pool, stream)
+
+    def replay_graph(self, graph):
+        graph.replay()
+        return
 
     # Tensor operations
 
@@ -280,7 +314,7 @@ class CUDA_Accelerator(DeepSpeedAccelerator):
     class_dict = None
 
     def _lazy_init_class_dict(self):
-        if self.class_dict != None:
+        if self.class_dict is not None:
             return
         else:
             self.class_dict = {}
@@ -322,3 +356,6 @@ class CUDA_Accelerator(DeepSpeedAccelerator):
     def build_extension(self):
         from torch.utils.cpp_extension import BuildExtension
         return BuildExtension
+
+    def export_envs(self):
+        return ['NCCL']
